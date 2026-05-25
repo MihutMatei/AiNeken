@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "laptop-price": {
+      "command": "python",
+      "args": ["-m", "mcp_server.server"],
+      "cwd": "/absolute/path/to/AiNeken",
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/AiNeken",
+        "API_URL": "http://localhost:8000",
+        "DATASET_PATH": "/absolute/path/to/AiNeken/data/laptop_price_dataset.csv"
+      }
+    }
+  }
+}

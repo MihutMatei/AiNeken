@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.ipynb_checkpoints/
+
+# Built model artifacts — regenerate via `python -m ml.src.train`.
+ml/artifacts/*.pkl
+ml/artifacts/*.json
+
+# IDE
+.vscode/
+.idea/
