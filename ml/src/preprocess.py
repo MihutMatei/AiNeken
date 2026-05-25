@@ -26,6 +26,19 @@ NUMERIC_COLS = [
 
 def load_dataset(csv_path: str | Path) -> tuple[pd.DataFrame, pd.Series]:
     df = pd.read_csv(csv_path).rename(columns=CSV_TO_FIELD)
+
+    # Coerce numeric columns. The raw CSV has at least one corrupt cell
+    # ("3test" in warranty_years) that drags the whole column to object dtype
+    # and breaks the StandardScaler downstream.
+    for col in NUMERIC_COLS + [TARGET]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    before = len(df)
+    df = df.dropna(subset=NUMERIC_COLS + [TARGET]).reset_index(drop=True)
+    dropped = before - len(df)
+    if dropped:
+        # Quiet print rather than logging — this runs in scripts.
+        print(f"[preprocess] dropped {dropped} row(s) with non-numeric values.")
+
     y = df[TARGET]
     X = df.drop(columns=[TARGET, *DROP_FROM_FEATURES])
     assert set(X.columns) == set(CATEGORICAL_COLS + NUMERIC_COLS), (

@@ -4,9 +4,9 @@ __pycache__/
 .env
 .ipynb_checkpoints/
 
-# Built model artifacts — regenerate via `python -m ml.src.train`.
-ml/artifacts/*.pkl
-ml/artifacts/*.json
+# Artifacts are small for this project (≤ a few MB) so we commit them — this
+# means the API/MCP teammates don't have to retrain to get a working stack.
+# If artifacts ever grow past ~50MB, switch to git-lfs or a release upload.
 
 # IDE
 .vscode/
