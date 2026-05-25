@@ -1,22 +1,23 @@
-"""High-level inference interface for the laptop-price model.
+"""High-level inference interface for the laptop-price PricingModel.
 
 Single import surface for the API and MCP layers. They never need to know
-about joblib, SHAP, or the file layout under ml/artifacts/.
+about joblib, sklearn, or the file layout under ml/artifacts/.
 
-    from ml.src.inference import (
-        InferenceEngine,
-        get_engine,
-    )
+    from ml.src.inference import get_engine
 
     engine = get_engine()
-    engine.predict(features)
-    engine.explain(features)
-    engine.compare(features_a, features_b)
-    engine.model_card()
+    engine.predict(features)            # -> PredictionResponse
+    engine.explain(features)            # -> FeatureContributionsResponse
+    engine.compare(features_a, features_b)  # -> ComparisonResponse
+    engine.model_card()                 # -> ModelCard
 
-The engine is constructed once (module-level singleton via `get_engine`) and
-holds the loaded sklearn Pipeline, the SHAP explainer, the model card, and
-the training-set mean (used as the SHAP baseline).
+The engine is constructed once (module-level singleton via `get_engine`).
+First call costs ~1s (joblib load + a small read of the dataset for the
+baseline calibration); subsequent calls are sub-millisecond.
+
+This module is the contract with the API/MCP teammates. Pydantic return
+types are defined in shared/schema.py — changes here propagate to the API
+docs and MCP tool definitions automatically.
 """
 
 from __future__ import annotations
@@ -24,17 +25,14 @@ from __future__ import annotations
 import json
 import os
 import threading
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import joblib
 import numpy as np
 import pandas as pd
-import shap
 
-from ml.src.preprocess import CATEGORICAL_COLS, NUMERIC_COLS, load_dataset
-from ml.src.split import load_splits
+from ml.src.preprocess import CATEGORICAL_COLS, NUMERIC_COLS
 from shared.schema import (
     ComparisonResponse,
     FeatureContribution,
@@ -53,13 +51,21 @@ FEATURE_ORDER = CATEGORICAL_COLS + NUMERIC_COLS
 
 def _features_to_df(features: LaptopFeatures) -> pd.DataFrame:
     """Pydantic LaptopFeatures -> single-row DataFrame in the column order
-    the pipeline was trained on."""
+    the model was trained on. Extra fields on LaptopFeatures (screen size,
+    weight, etc.) are silently ignored — the API can still accept them,
+    the model just doesn't use them."""
     row = features.model_dump(exclude={"model_name"}, mode="json")
-    return pd.DataFrame([row])[FEATURE_ORDER]
+    keep = {col: row[col] for col in FEATURE_ORDER}
+    return pd.DataFrame([keep])[FEATURE_ORDER]
 
 
 class InferenceEngine:
-    """Wraps the trained model + SHAP explainer + model card."""
+    """Wraps the trained PricingModel + its model card.
+
+    The PricingModel itself carries all the introspection methods we need
+    (`contributions`, `baseline_usd`, `card_payload`) — this class is a
+    thin Pydantic-typed adapter over it.
+    """
 
     def __init__(
         self,
@@ -69,81 +75,54 @@ class InferenceEngine:
         self.artifacts_dir = Path(artifacts_dir)
         self.data_path = Path(data_path)
 
-        self.pipeline = joblib.load(self.artifacts_dir / "model.pkl")
+        self.model = joblib.load(self.artifacts_dir / "model.pkl")
         self.card: dict[str, Any] = json.loads(
             (self.artifacts_dir / "model_card.json").read_text()
         )
         self.version: str = self.card.get("version", "unknown")
 
-        # Baseline = mean prediction on the training split. Used so the
-        # contributions add up to (prediction - baseline).
-        X, _ = load_dataset(self.data_path)
-        splits = load_splits(self.artifacts_dir)
-        self._X_train = X.iloc[splits["train_idx"]]
-        self.baseline: float = float(self.pipeline.predict(self._X_train).mean())
-
-        # SHAP TreeExplainer on the *fitted estimator*, evaluated on the
-        # *transformed* features. We build a small wrapper that applies the
-        # preprocessor and then calls the explainer.
-        self._preprocessor = self.pipeline.named_steps["preprocess"]
-        self._estimator = self.pipeline.named_steps["model"]
-        self._feature_names_out = list(self._preprocessor.get_feature_names_out())
-        self._explainer = shap.TreeExplainer(self._estimator)
-
-    # --- Primitive 1: predict ------------------------------------------------
+    # ------------------------------------------------------------------
+    # Primitive 1: predict
+    # ------------------------------------------------------------------
 
     def predict(self, features: LaptopFeatures) -> PredictionResponse:
         df = _features_to_df(features)
-        price = float(self.pipeline.predict(df)[0])
+        price = float(self.model.predict(df)[0])
         return PredictionResponse(
             predicted_price_usd=round(price, 2),
             model_version=self.version,
         )
 
-    # --- Primitive 2: explain ------------------------------------------------
+    # ------------------------------------------------------------------
+    # Primitive 2: explain
+    # ------------------------------------------------------------------
 
     def explain(self, features: LaptopFeatures) -> FeatureContributionsResponse:
         df = _features_to_df(features)
-        Xt = self._preprocessor.transform(df)
-        if hasattr(Xt, "toarray"):
-            Xt = Xt.toarray()
-        shap_row = np.asarray(self._explainer.shap_values(Xt))[0]
+        breakdown = self.model.contributions(df)
+        baseline = self.model.baseline_usd()
+        prediction = float(self.model.predict(df)[0])
 
-        # Sum up the SHAP values back to the original (pre-one-hot) feature names.
-        # OneHotEncoder produces "cat__brand_Dell" etc. so we split off the prefix.
-        contributions: dict[str, float] = {name: 0.0 for name in FEATURE_ORDER}
-        for transformed_name, shap_val in zip(self._feature_names_out, shap_row):
-            base = transformed_name.split("__", 1)[-1]
-            original = base.split("_", 1)[0] if base.split("_", 1)[0] in contributions else None
-            # Best-effort match: longest prefix that is one of our columns.
-            if original is None:
-                for col in FEATURE_ORDER:
-                    if base.startswith(col):
-                        original = col
-                        break
-            if original is None:
-                continue
-            contributions[original] += float(shap_val)
-
-        row = df.iloc[0]
         items = [
             FeatureContribution(
-                feature=col,
-                value=row[col].item() if hasattr(row[col], "item") else row[col],
-                shap_usd=round(contributions[col], 2),
+                feature=feature_name,
+                value=parts["value"],
+                shap_usd=parts["total_usd"],
             )
-            for col in FEATURE_ORDER
+            for feature_name, parts in breakdown.items()
         ]
         items.sort(key=lambda c: abs(c.shap_usd), reverse=True)
 
         return FeatureContributionsResponse(
-            predicted_price_usd=round(float(self.pipeline.predict(df)[0]), 2),
-            baseline_usd=round(self.baseline, 2),
+            predicted_price_usd=round(prediction, 2),
+            baseline_usd=round(baseline, 2),
             contributions=items,
             model_version=self.version,
         )
 
-    # --- Primitive 3: compare ------------------------------------------------
+    # ------------------------------------------------------------------
+    # Primitive 3: compare
+    # ------------------------------------------------------------------
 
     def compare(
         self,
@@ -152,10 +131,10 @@ class InferenceEngine:
     ) -> ComparisonResponse:
         df_a = _features_to_df(features_a)
         df_b = _features_to_df(features_b)
-        price_a = float(self.pipeline.predict(df_a)[0])
-        price_b = float(self.pipeline.predict(df_b)[0])
+        price_a = float(self.model.predict(df_a)[0])
+        price_b = float(self.model.predict(df_b)[0])
 
-        # Per-feature delta via "swap one column at a time from A to B" and
+        # Per-feature delta: swap each differing column from A to B,
         # measure the price change. O(n_features) predictions — cheap.
         deltas: list[FeatureDelta] = []
         row_a = df_a.iloc[0]
@@ -165,7 +144,7 @@ class InferenceEngine:
                 continue
             swapped = df_a.copy()
             swapped[col] = row_b[col]
-            new_price = float(self.pipeline.predict(swapped)[0])
+            new_price = float(self.model.predict(swapped)[0])
             deltas.append(
                 FeatureDelta(
                     feature=col,
@@ -184,13 +163,17 @@ class InferenceEngine:
             model_version=self.version,
         )
 
-    # --- Primitive 4: model_card --------------------------------------------
+    # ------------------------------------------------------------------
+    # Primitive 4: model_card
+    # ------------------------------------------------------------------
 
     def model_card(self) -> ModelCard:
         return ModelCard.model_validate(self.card)
 
 
-# --- Module-level singleton -------------------------------------------------
+# ----------------------------------------------------------------------
+# Module-level singleton
+# ----------------------------------------------------------------------
 
 _engine: InferenceEngine | None = None
 _engine_lock = threading.Lock()
@@ -200,7 +183,9 @@ def get_engine(
     artifacts_dir: Path | str = DEFAULT_ARTIFACTS,
     data_path: Path | str = DEFAULT_DATA,
 ) -> InferenceEngine:
-    """Lazy, thread-safe singleton. Re-import in tests with a fresh dir."""
+    """Lazy, thread-safe singleton. The kwargs are honored only on the first
+    call (when the engine is first constructed). For tests that want a fresh
+    engine, set ml.src.inference._engine = None and call again."""
     global _engine
     if _engine is None:
         with _engine_lock:
