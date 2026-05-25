@@ -1,11 +1,24 @@
 # Shared dev environment for all four parts.
 # Pin minor versions; bump deliberately.
+
+# Shared contract
 pydantic>=2.6,<3
+
+# Part 1 — ML
 pandas>=2.1,<3
+numpy>=1.26,<3
 scikit-learn>=1.4,<2
 joblib>=1.3,<2
+shap>=0.45,<1            # per-prediction explanations
+jupyter>=1.0             # EDA notebook only — heavy; can drop if short on disk
+
+# Part 2 — FastAPI
 fastapi>=0.110,<1
 uvicorn[standard]>=0.27,<1
-httpx>=0.27,<1
+
+# Part 3 — FastMCP
 mcp>=1.2,<2
-jupyter>=1.0
+httpx>=0.27,<1           # MCP server -> API HTTP calls
+
+# Dev / tests
+pytest>=8.0,<9

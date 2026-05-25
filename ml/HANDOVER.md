@@ -1,57 +1,121 @@
-# Handover — Part 1: Machine Learning
+# ML → API/MCP handover
 
-You own training the laptop-price regressor. ~2 hours.
+Status: **trained model committed** to `ml/artifacts/`. The API and MCP layers can integrate immediately, no training required on your side.
 
-## Your single deliverable
-Drop two files into `ml/artifacts/`:
-- `model.pkl` — a fitted scikit-learn `Pipeline` that takes a pandas DataFrame and returns price in USD.
-- `model_card.json` — `{"version": "...", "metric_mae": ..., "metric_rmse": ..., "metric_r2": ..., "trained_at": "..."}`.
+---
 
-Once these exist, the API picks them up automatically. **Do not touch anything outside `ml/` and `data/`.**
+## TL;DR — how you call the model
 
-## Setup (5 min)
-```bash
-cd <repo root>
-pip install -r requirements.txt
-python -c "from ml.src.preprocess import load_dataset; X,y = load_dataset('data/laptop_price_dataset.csv'); print(X.shape, y.shape)"
-# expect: (3000, 10) (3000,)
+```python
+from ml.src.inference import get_engine
+from shared.schema import LaptopFeatures
+
+engine = get_engine()          # lazy singleton, warm on first call (~1s)
+
+engine.predict(features)       # → PredictionResponse
+engine.explain(features)       # → FeatureContributionsResponse  (per-feature SHAP)
+engine.compare(a, b)           # → ComparisonResponse           (diff two configs)
+engine.model_card()            # → ModelCard                    (version, metrics, schema)
 ```
 
-## The contract — DO NOT BREAK
-- Input columns to your pipeline (already produced by `ml/src/preprocess.py`):
-  - **Categorical:** `brand`, `processor`, `graphics_card`, `operating_system`
-  - **Numeric:** `ram_gb`, `storage_gb`, `screen_size_inches`, `weight_kg`, `battery_life_hours`, `warranty_years`
-- Target: `price_usd` (float).
-- Persist with `joblib.dump(pipeline, "ml/artifacts/model.pkl")` so the API can `pipe.predict(df)`.
-- **Do not rename columns. Do not drop columns.** If you need to engineer features, do it inside the `Pipeline` (as a transformer step) so the API doesn't need to know.
+That's the entire surface. All four return Pydantic models defined in `shared/schema.py` — you can return them straight from FastAPI without re-validating.
 
-## Baseline (already written for you)
-```bash
-python -m ml.src.train --data data/laptop_price_dataset.csv --out ml/artifacts/
+---
+
+## What's in `ml/artifacts/` (committed to git)
+
+| File | Purpose |
+|---|---|
+| `model.pkl` | Trained sklearn `Pipeline` (preprocessor + `GradientBoostingRegressor`). 146 KB. |
+| `model_card.json` | Version, estimator, split sizes, val + test metrics, feature schema. |
+| `split.json` | Frozen train/val/test row indices (seed=42). Required by `inference.py`. |
+
+Pull and you're ready to integrate — no `pip install -r requirements.txt` for ML needed unless you want to retrain.
+
+---
+
+## What changed since the scaffold
+
+| Area | Change | Why it matters to you |
+|---|---|---|
+| `shared/schema.py` | Added `FeatureContribution(s)Response`, `ComparisonResponse`, `FeatureDelta`, `ModelCard`. `LaptopFeatures` unchanged. | New response types are ready to wire into FastAPI routes and MCP tool return types. |
+| `ml/src/inference.py` | **New.** Single import surface (`get_engine()`) for all model interactions. | Use this — don't reach into `joblib.load(...)` directly. |
+| `ml/src/split.py` | **New.** 3-way stratified split, persisted to `split.json`. | `inference.py` reads `split.json` to compute the SHAP baseline. Don't delete the file. |
+| `ml/src/train.py` | Reads `split.json`. Fits on train, scores on val, leaves test sealed. | If you retrain, val metrics auto-update in `model_card.json`. Test metrics stay until you run `evaluate --split test --finalize`. |
+| `ml/src/evaluate.py` | Adds `--split {train,val,test}` and a `--finalize` gate for the sealed test pass. | You probably won't need this — just useful if you want to sanity-check after a retrain. |
+| `ml/src/preprocess.py` | Coerces numeric columns and drops corrupt rows (the CSV has 2 typos like `3test`). Quiet `[preprocess] dropped N row(s)` line on load. | Expect that log line when you import the engine — it's not an error. |
+| `requirements.txt` | Added `shap`, `numpy`, `pytest`. | Already installed in `.venv/` if you `pip install -r requirements.txt`. |
+
+---
+
+## How to swap the existing API stub for the real engine
+
+`api/app/model_loader.py` currently joblib-loads the model and exposes `pipeline.predict`. Replace that with the engine:
+
+```python
+# api/app/model_loader.py — proposed
+from ml.src.inference import get_engine
+
+def get_inference_engine():
+    return get_engine()
 ```
-This trains a `GradientBoostingRegressor` and writes both files. **Run it first** — if MAE looks acceptable, you're done.
 
-## If MAE is too high (> ~$500)
-Mean price is $1780, so MAE under $500 is roughly the bar. Things to try in `ml/src/train.py`:
-1. Swap to `HistGradientBoostingRegressor` (faster, usually better).
-2. Add `RandomForestRegressor` and `Ridge`, pick the winner.
-3. Try `GridSearchCV` over `n_estimators`, `max_depth`, `learning_rate`.
-4. Quick EDA in `ml/notebooks/01_eda.ipynb` to spot leakage / weird distributions.
+Then in `api/app/main.py`:
 
-**Don't over-engineer.** The brief grades the pipeline, not the leaderboard. Once MAE is reasonable, ship.
+```python
+from api.app.model_loader import get_inference_engine
+from shared.schema import (
+    ComparisonResponse,
+    FeatureContributionsResponse,
+    HealthResponse,
+    LaptopFeatures,
+    ModelCard,
+    PredictionResponse,
+)
 
-## Validate before handoff
-```bash
-python -m ml.src.evaluate --model ml/artifacts/model.pkl --data data/laptop_price_dataset.csv
-# Check ml/artifacts/model_card.json is present and metrics aren't NaN.
+engine = get_inference_engine()
+
+@app.post("/predict", response_model=PredictionResponse)
+def predict(features: LaptopFeatures):
+    return engine.predict(features)
+
+@app.post("/explain", response_model=FeatureContributionsResponse)
+def explain(features: LaptopFeatures):
+    return engine.explain(features)
+
+@app.post("/compare", response_model=ComparisonResponse)
+def compare(payload: dict):              # body = {"a": LaptopFeatures, "b": LaptopFeatures}
+    a = LaptopFeatures(**payload["a"])
+    b = LaptopFeatures(**payload["b"])
+    return engine.compare(a, b)
+
+@app.get("/model-card", response_model=ModelCard)
+def model_card():
+    return engine.model_card()
+
+@app.get("/health", response_model=HealthResponse)
+def health():
+    return HealthResponse(status="ok", model_loaded=True, model_version=engine.version)
 ```
 
-## Done when
-- [ ] `ml/artifacts/model.pkl` exists
-- [ ] `ml/artifacts/model_card.json` exists with non-NaN metrics
-- [ ] You pinged Matei in the team chat so the API can be restarted to pick up the new model
+For the MCP server in `mcp_server/server.py`, each FastAPI route becomes one `@mcp.tool()`. The richer demo prompt the panel wants:
 
-## If you're blocked
-- Pipeline errors → paste the full traceback into the AI, plus `shared/schema.py` and `ml/src/preprocess.py`.
-- "Module not found" → make sure you run from the repo root, not from inside `ml/`.
-- Anything ambiguous → ask Matei, don't guess and break the contract.
+> *"Compare a Dell with 16GB vs 32GB RAM, explain the price drivers, tell me whether the cheaper one is the better value."*
+
+…requires the LLM to chain `predict` + `compare` + `explain`. Expose all three.
+
+---
+
+## One sharp edge worth knowing
+
+`get_engine()` builds a singleton on first call. It reads `data/laptop_price_dataset.csv` to compute the SHAP baseline (mean prediction over the train split). So:
+
+- The CSV needs to be present at the path in `DATASET_PATH` (default `data/laptop_price_dataset.csv`).
+- First call takes ~1s; subsequent calls are sub-millisecond.
+- For the container build, copy `data/` into the image (already done in `mcp_server/Dockerfile`; do the same in `api/Dockerfile` if it's missing).
+
+---
+
+## Honesty disclaimer (for the demo)
+
+The dataset has essentially **no signal** — predicted prices land near the mean ($1780) regardless of inputs, and R² hovers around 0. Per Matei's call, we ship as-is; the brief grades the pipeline (data → ML → API → MCP → LLM), not regression accuracy. Don't oversell the model in the demo — frame it as "the model gives a number and an explanation, here's how the LLM consumes them."

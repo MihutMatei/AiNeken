@@ -79,3 +79,65 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     model_loaded: bool
     model_version: str | None = None
+
+
+# --- Richer interrogation responses ---------------------------------------
+
+
+class FeatureContribution(BaseModel):
+    """One feature's contribution to a single prediction (SHAP-style)."""
+
+    feature: str
+    value: float | int | str
+    shap_usd: float = Field(..., description="Signed USD contribution vs. baseline")
+
+
+class FeatureContributionsResponse(BaseModel):
+    predicted_price_usd: float
+    baseline_usd: float = Field(
+        ..., description="Mean predicted price across the training set"
+    )
+    contributions: list[FeatureContribution] = Field(
+        ..., description="Sorted by absolute USD impact, descending"
+    )
+    model_version: str
+
+
+class FeatureDelta(BaseModel):
+    feature: str
+    value_a: float | int | str
+    value_b: float | int | str
+    delta_usd: float = Field(..., description="Signed USD impact of moving from A to B")
+
+
+class ComparisonResponse(BaseModel):
+    price_a_usd: float
+    price_b_usd: float
+    delta_usd: float = Field(..., description="price_b - price_a")
+    feature_deltas: list[FeatureDelta] = Field(
+        ..., description="Only features that differ between A and B, sorted by |delta|"
+    )
+    model_version: str
+
+
+class FeatureSchema(BaseModel):
+    categorical: list[str]
+    numeric: list[str]
+
+
+class ModelCard(BaseModel):
+    version: str
+    trained_at: str
+    estimator: str
+    split_seed: int | None = None
+    n_train: int
+    n_val: int
+    n_test: int
+    val_metric_mae: float | None = None
+    val_metric_rmse: float | None = None
+    val_metric_r2: float | None = None
+    test_metric_mae: float | None = None
+    test_metric_rmse: float | None = None
+    test_metric_r2: float | None = None
+    feature_columns: FeatureSchema
+    target: str
