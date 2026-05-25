@@ -95,7 +95,7 @@ docker compose -f deploy/docker-compose.yml restart mcp_server
 | API returns 500 | Verifica `MODEL_PATH` si volumul `ml/artifacts/` |
 | MCP tool nu e apelat | Specifica explicit "use the predict_laptop_price tool" in prompt |
 | Docker daemon not running | `sudo service docker start` (WSL) |
-
+| `ModuleNotFoundError: No module named 'ml.src'` | În `api/Dockerfile` adaugă `COPY ml/ ./ml/` după `COPY api/ ./api/` |
 ---
 
 ## Note arhitectura
