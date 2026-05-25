@@ -13,7 +13,7 @@ from fastmcp import FastMCP
 FASTAPI_URL = os.getenv("FASTAPI_URL", "http://localhost:8000")
 
 # Seteaza False cand coechipierul termina FastAPI-ul
-MOCK_MODE = True
+MOCK_MODE = False
 
 # ─────────────────────────────────────────────
 # SERVER MCP
@@ -82,7 +82,7 @@ def predict_laptop_price(
         response.raise_for_status()
         result = response.json()
         return {
-            "predicted_price": result["predicted_price"],
+            "predicted_price": result["predicted_price_usd"],
             "currency": "USD",
             "input": payload
         }
