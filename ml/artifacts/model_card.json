@@ -1,17 +1,21 @@
 {
-  "version": "0.1.0",
-  "trained_at": "2026-05-25T08:44:24.755292+00:00",
-  "estimator": "GradientBoostingRegressor",
+  "version": "0.2.0",
+  "trained_at": "2026-05-25T09:41:45.535793+00:00",
+  "estimator": "PricingModel",
+  "architecture": "prior(components + brand_markup + os_premium) + Ridge residual",
   "split_seed": 42,
   "n_train": 2098,
   "n_val": 450,
   "n_test": 450,
-  "val_metric_mae": 634.2523296579506,
-  "val_metric_rmse": 740.4821461866165,
-  "val_metric_r2": -0.06178236865129527,
-  "test_metric_mae": 630.8683704511056,
-  "test_metric_rmse": 737.3090804173589,
-  "test_metric_r2": -0.041392356893309445,
+  "train_metric_mae": 617.441962016259,
+  "train_metric_rmse": 716.4697160032244,
+  "train_metric_r2": 0.009424735292583142,
+  "val_metric_mae": 621.8319768126174,
+  "val_metric_rmse": 723.5458442814296,
+  "val_metric_r2": -0.016007419063744033,
+  "test_metric_mae": 626.1333667035866,
+  "test_metric_rmse": 727.5561483019404,
+  "test_metric_r2": -0.01329670358711521,
   "feature_columns": {
     "categorical": [
       "brand",
@@ -21,12 +25,91 @@
     ],
     "numeric": [
       "ram_gb",
-      "storage_gb",
-      "screen_size_inches",
-      "weight_kg",
-      "battery_life_hours",
-      "warranty_years"
+      "storage_gb"
     ]
   },
-  "target": "price_usd"
+  "target": "price_usd",
+  "pricing": {
+    "alpha": 1.0,
+    "assembly_base_usd": 200.0,
+    "ridge_intercept_usd": 756.28,
+    "per_gb_ram_usd": {
+      "prior": 8.0,
+      "effective": 0.6883
+    },
+    "per_gb_storage_usd": {
+      "prior": 0.2,
+      "effective": 0.0216
+    },
+    "brand_markup_usd": {
+      "prior": {
+        "Apple": 450.0,
+        "Razer": 300.0,
+        "MSI": 150.0,
+        "Asus": 100.0,
+        "Dell": 80.0,
+        "HP": 50.0,
+        "Lenovo": 50.0,
+        "Acer": 20.0
+      },
+      "effective": {
+        "Apple": 196.24,
+        "Razer": 134.75,
+        "MSI": 149.16,
+        "Asus": 210.77,
+        "Dell": 124.18,
+        "HP": 181.16,
+        "Lenovo": 139.42,
+        "Acer": 64.31
+      }
+    },
+    "os_premium_usd": {
+      "prior": {
+        "macOS": 100.0,
+        "Windows 11": 40.0,
+        "Windows 10": 20.0,
+        "Linux": 0.0
+      },
+      "effective": {
+        "macOS": 86.52,
+        "Windows 11": -29.65,
+        "Windows 10": 45.74,
+        "Linux": 57.39
+      }
+    },
+    "cpu_price_usd": {
+      "prior": {
+        "Intel i5": 220.0,
+        "Intel i7": 380.0,
+        "Intel i9": 580.0,
+        "AMD Ryzen 5": 200.0,
+        "AMD Ryzen 7": 360.0,
+        "AMD Ryzen 9": 550.0
+      },
+      "effective": {
+        "Intel i5": 348.44,
+        "Intel i7": 394.74,
+        "Intel i9": 391.25,
+        "AMD Ryzen 5": 385.73,
+        "AMD Ryzen 7": 392.06,
+        "AMD Ryzen 9": 377.78
+      }
+    },
+    "gpu_price_usd": {
+      "prior": {
+        "Intel UHD": 0.0,
+        "AMD Radeon": 60.0,
+        "NVIDIA GTX 1650": 180.0,
+        "NVIDIA RTX 3060": 330.0,
+        "NVIDIA RTX 3070": 480.0
+      },
+      "effective": {
+        "Intel UHD": 228.83,
+        "AMD Radeon": 210.39,
+        "NVIDIA GTX 1650": 192.02,
+        "NVIDIA RTX 3060": 237.24,
+        "NVIDIA RTX 3070": 181.52
+      }
+    }
+  }
 }

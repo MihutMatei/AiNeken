@@ -129,10 +129,14 @@ class ModelCard(BaseModel):
     version: str
     trained_at: str
     estimator: str
+    architecture: str | None = None
     split_seed: int | None = None
     n_train: int
     n_val: int
     n_test: int
+    train_metric_mae: float | None = None
+    train_metric_rmse: float | None = None
+    train_metric_r2: float | None = None
     val_metric_mae: float | None = None
     val_metric_rmse: float | None = None
     val_metric_r2: float | None = None
@@ -141,3 +145,9 @@ class ModelCard(BaseModel):
     test_metric_r2: float | None = None
     feature_columns: FeatureSchema
     target: str
+    # PricingModel surfaces hand-picked priors + the data-calibrated
+    # effective values. Schema-less (dict) on purpose — the API/MCP layer
+    # passes it through to the LLM as-is and lets it summarize.
+    pricing: dict | None = None
+
+    model_config = {"extra": "ignore"}
